@@ -1,24 +1,38 @@
 ﻿using System;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Jupyter_PowerShell5.Models;
 using NetMQ;
 using NetMQ.Sockets;
-using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace Jupyter_PowerShell5
 {
     public class Kernel
     {
+        public delegate void HandleMessage(Kernel kernel, Message message);
+
+        public ResponseSocket HBSocket { get; set; }
+        public RouterSocket ShellSocket { get; set; }
+        public PublisherSocket IOPubSocket { get; set; }
+
         private readonly Connection connection;
+        private readonly HMAC signatureProvider;
         private Task heartbeatTask;
         private Task messageTask;
-
         private bool running = false;
 
         public Kernel(Connection connection)
         {
             this.connection = connection;
+            if (!string.IsNullOrEmpty(this.connection.Key))
+            {
+                this.signatureProvider =
+                    HMAC.Create(this.connection.SignatureScheme.Replace("-", string.Empty).ToUpperInvariant());
+                this.signatureProvider.Key = Encoding.ASCII.GetBytes(this.connection.Key);
+            }
         }
 
         public void Start()
@@ -26,14 +40,16 @@ namespace Jupyter_PowerShell5
             lock (this)
             {
                 this.Stop();
-                Console.WriteLine("Starting kernel with connection:");
-                Console.WriteLine(JsonConvert.SerializeObject(this.connection));
+                Console.WriteLine("Starting kernel");
 
                 Volatile.Write(ref this.running, true);
                 this.heartbeatTask = Task.Run(this.ProcessHeartbeat);
                 this.messageTask = Task.Run(this.ProcessMessage);
             }
+        }
 
+        public void Wait()
+        {
             Task.WaitAll(this.heartbeatTask, this.messageTask);
         }
 
@@ -45,20 +61,37 @@ namespace Jupyter_PowerShell5
                 {
                     Console.WriteLine("Stopping kernel");
                     Volatile.Write(ref this.running, false);
+                    Task.WaitAll(this.heartbeatTask, this.messageTask);
                 }
             }
+        }
+
+        public string SignMessage(params string[] parts)
+        {
+            this.signatureProvider.Initialize();
+            foreach (var item in parts)
+            {
+                var bytes = Encoding.UTF8.GetBytes(item);
+                this.signatureProvider.TransformBlock(bytes, 0, bytes.Length, null, 0);
+            }
+
+            this.signatureProvider.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+            return BitConverter.ToString(this.signatureProvider.Hash).Replace("-", string.Empty).ToLowerInvariant();
         }
 
         private void ProcessHeartbeat()
         {
             var hbAddress = this.GetAddress(this.connection.HBPort);
             Console.WriteLine($"Starting heartbeat at {hbAddress}");
-            using var hbSocket = new ResponseSocket(hbAddress);
+            this.HBSocket = new ResponseSocket(hbAddress);
 
             while (Volatile.Read(ref this.running))
             {
-                hbSocket.SendFrame(hbSocket.ReceiveFrameBytes());
+                Console.WriteLine("~ Heartbeat");
+                this.HBSocket.SendFrame(this.HBSocket.ReceiveFrameBytes());
             }
+
+            this.HBSocket.Dispose();
         }
 
         private void ProcessMessage()
@@ -67,14 +100,35 @@ namespace Jupyter_PowerShell5
             var ioAddress = this.GetAddress(this.connection.IOPubPort);
             Console.WriteLine($"Starting shell server at {shellAddress}");
             Console.WriteLine($"Starting IO publisher at {ioAddress}");
-            using var shellSocket = new RouterSocket(shellAddress);
-            using var ioSocket = new PublisherSocket(ioAddress);
+            this.ShellSocket = new RouterSocket(shellAddress);
+            this.IOPubSocket = new PublisherSocket(ioAddress);
+
+            var globalSessionId = Guid.NewGuid().ToString();
+            this.IOPubSocket.SendMessage(Message.Create(
+                globalSessionId, "status", new Status {ExecutionState = Status.Starting}), this);
 
             while (Volatile.Read(ref this.running))
             {
-                var message = shellSocket.ReceiveMessage();
-                Console.WriteLine($"> {JsonConvert.SerializeObject(message)}");
+                var message = this.ShellSocket.ReceiveMessage(this);
+                this.IOPubSocket.SendMessage(Message.Create(
+                    message, "status", new Status {ExecutionState = Status.Busy}), this);
+
+                if (!string.IsNullOrEmpty(message.Signature))
+                {
+                    switch (message.Header.MessageType)
+                    {
+                        case "kernel_info_request":
+                            MessageHandlers.HandleKernelInfo(this, message);
+                            break;
+                    }
+                }
+
+                this.IOPubSocket.SendMessage(Message.Create(
+                    message, "status", new Status {ExecutionState = Status.Idle}), this);
             }
+
+            this.ShellSocket.Dispose();
+            this.IOPubSocket.Dispose();
         }
 
         private string GetAddress(int port)
