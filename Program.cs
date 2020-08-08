@@ -1,6 +1,10 @@
 ﻿using System;
 using System.IO;
+using System.Linq;
 using System.Management.Automation;
+using System.Management.Automation.Runspaces;
+using System.Threading;
+using System.Threading.Tasks;
 using Jupyter_PowerShell5.Models;
 using Newtonsoft.Json;
 
@@ -20,16 +24,28 @@ namespace Jupyter_PowerShell5
             }
             else
             {
-                var ps = PowerShell.Create();
-                foreach (var psObject in ps.AddScript("$PSVersionTable").AddCommand("Out-String").Invoke())
+                var rs = RunspaceFactory.CreateOutOfProcessRunspace(new TypeTable(Enumerable.Empty<string>()));
+                rs.Open();
+                var t = new Thread(() =>
                 {
-                    Console.WriteLine(psObject);
-                }
-
-                foreach (var informationRecord in ps.Streams.Information)
-                {
-                    Console.WriteLine(informationRecord.MessageData.ToString());
-                }
+                    try
+                    {
+                        var ps = PowerShell.Create();
+                        ps.Runspace = rs;
+                        foreach (var psObject in ps.AddScript("throw 'test'").AddCommand("Out-String").Invoke())
+                        {
+                            Console.WriteLine(psObject);
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        Console.WriteLine(e);
+                    }
+                });
+                t.Start();
+                t.Join();
+                
+                rs.Close();
             }
         }
     }

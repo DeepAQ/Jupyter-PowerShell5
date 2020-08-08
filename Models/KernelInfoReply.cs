@@ -2,7 +2,7 @@
 
 namespace Jupyter_PowerShell5.Models
 {
-    public class KernelInfoReply : StatusBase
+    public class KernelInfoReply : ReplyStatusBase
     {
         [JsonProperty("protocol_version")] public string ProtocolVersion { get; set; }
 

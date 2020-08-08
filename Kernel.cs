@@ -1,4 +1,7 @@
 ﻿using System;
+using System.Linq;
+using System.Management.Automation;
+using System.Management.Automation.Runspaces;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -6,7 +9,6 @@ using System.Threading.Tasks;
 using Jupyter_PowerShell5.Models;
 using NetMQ;
 using NetMQ.Sockets;
-using Newtonsoft.Json.Linq;
 
 namespace Jupyter_PowerShell5
 {
@@ -21,8 +23,10 @@ namespace Jupyter_PowerShell5
         private readonly Connection connection;
         private readonly HMAC signatureProvider;
         private Task heartbeatTask;
-        private Task messageTask;
-        private bool running = false;
+        private Task serverTask;
+        private CancellationTokenSource cancellationTokenSource;
+        private Runspace psRunspace;
+        private int executionCount;
 
         public Kernel(Connection connection)
         {
@@ -40,28 +44,35 @@ namespace Jupyter_PowerShell5
             lock (this)
             {
                 this.Stop();
-                Console.WriteLine("Starting kernel");
+                Console.WriteLine($"Creating PowerShell session");
+                this.psRunspace = RunspaceFactory.CreateOutOfProcessRunspace(new TypeTable(Enumerable.Empty<string>()));
+                this.psRunspace.Open();
 
-                Volatile.Write(ref this.running, true);
-                this.heartbeatTask = Task.Run(this.ProcessHeartbeat);
-                this.messageTask = Task.Run(this.ProcessMessage);
+                Console.WriteLine("Starting kernel");
+                this.cancellationTokenSource = new CancellationTokenSource();
+                this.heartbeatTask = Task.Run(this.HeartbeatTask);
+                this.serverTask = Task.Run(this.ServerTask);
             }
         }
 
         public void Wait()
         {
-            Task.WaitAll(this.heartbeatTask, this.messageTask);
+            Task.WaitAll(this.heartbeatTask, this.serverTask);
         }
 
         public void Stop()
         {
             lock (this)
             {
-                if (Volatile.Read(ref this.running))
+                if (this.cancellationTokenSource != null && !this.cancellationTokenSource.IsCancellationRequested)
                 {
                     Console.WriteLine("Stopping kernel");
-                    Volatile.Write(ref this.running, false);
-                    Task.WaitAll(this.heartbeatTask, this.messageTask);
+                    this.cancellationTokenSource.Cancel();
+                    this.Wait();
+
+                    Console.WriteLine("Closing PowerShell session");
+                    this.psRunspace.Close();
+                    this.psRunspace.Dispose();
                 }
             }
         }
@@ -79,27 +90,65 @@ namespace Jupyter_PowerShell5
             return BitConverter.ToString(this.signatureProvider.Hash).Replace("-", string.Empty).ToLowerInvariant();
         }
 
-        private void ProcessHeartbeat()
+        public int InvokePowerShell(string script, Message originalMessage)
         {
-            var hbAddress = this.GetAddress(this.connection.HBPort);
-            Console.WriteLine($"Starting heartbeat at {hbAddress}");
-            this.HBSocket = new ResponseSocket(hbAddress);
+            using var ps = PowerShell.Create();
+            ps.Runspace = this.psRunspace;
+            ps.Streams.Verbose.DataAdded += this.GetStreamHandler(index =>
+                $"VERBOSE: {ps.Streams.Verbose[index]}", ps, Stream.StdOut, originalMessage);
+            ps.Streams.Information.DataAdded += this.GetStreamHandler(index =>
+                ps.Streams.Information[index].ToString(), ps, Stream.StdOut, originalMessage);
+            ps.Streams.Warning.DataAdded += this.GetStreamHandler(index =>
+                $"WARNING: {ps.Streams.Warning[index]}", ps, Stream.StdOut, originalMessage);
+            ps.Streams.Error.DataAdded += this.GetStreamHandler(index =>
+                ps.Streams.Error[index].ToString(), ps, Stream.StdErr, originalMessage);
 
-            while (Volatile.Read(ref this.running))
+            try
             {
-                Console.WriteLine("~ Heartbeat");
-                this.HBSocket.SendFrame(this.HBSocket.ReceiveFrameBytes());
+                var outputs = ps.AddScript(script).AddCommand("Out-String").Invoke();
+                this.IOPubSocket.SendMessage(Message.Create(
+                    originalMessage, "stream", new Stream
+                    {
+                        Name = Stream.StdOut,
+                        Text = string.Join("\r\n", outputs)
+                    }), this);
+            }
+            catch (RuntimeException ex)
+            {
+                this.IOPubSocket.SendMessage(Message.Create(
+                    originalMessage, "stream", new Stream
+                    {
+                        Name = Stream.StdErr,
+                        Text = $"{ex.GetType()}: {ex.Message}\r\n{ex.ErrorRecord.ScriptStackTrace}"
+                    }), this);
             }
 
+            this.executionCount += 1;
+            return this.executionCount;
+        }
+
+        private void HeartbeatTask()
+        {
+            var hbAddress = this.GetAddress(this.connection.HBPort);
+            Console.WriteLine($"Starting heartbeat handler at {hbAddress}");
+            this.HBSocket = new ResponseSocket(hbAddress);
+
+            while (!this.cancellationTokenSource.IsCancellationRequested)
+            {
+                this.HBSocket.SendFrame(this.HBSocket.ReceiveFrameBytes());
+                Console.WriteLine("~ Heartbeat");
+            }
+
+            Console.WriteLine("Stopping heartbeat handler");
             this.HBSocket.Dispose();
         }
 
-        private void ProcessMessage()
+        private void ServerTask()
         {
             var shellAddress = this.GetAddress(this.connection.ShellPort);
             var ioAddress = this.GetAddress(this.connection.IOPubPort);
             Console.WriteLine($"Starting shell server at {shellAddress}");
-            Console.WriteLine($"Starting IO publisher at {ioAddress}");
+            Console.WriteLine($"Starting iopub publisher at {ioAddress}");
             this.ShellSocket = new RouterSocket(shellAddress);
             this.IOPubSocket = new PublisherSocket(ioAddress);
 
@@ -107,7 +156,7 @@ namespace Jupyter_PowerShell5
             this.IOPubSocket.SendMessage(Message.Create(
                 globalSessionId, "status", new Status {ExecutionState = Status.Starting}), this);
 
-            while (Volatile.Read(ref this.running))
+            while (!this.cancellationTokenSource.IsCancellationRequested)
             {
                 var message = this.ShellSocket.ReceiveMessage(this);
                 this.IOPubSocket.SendMessage(Message.Create(
@@ -120,6 +169,9 @@ namespace Jupyter_PowerShell5
                         case "kernel_info_request":
                             MessageHandlers.HandleKernelInfo(this, message);
                             break;
+                        case "execute_request":
+                            MessageHandlers.HandleExecute(this, message);
+                            break;
                     }
                 }
 
@@ -127,13 +179,29 @@ namespace Jupyter_PowerShell5
                     message, "status", new Status {ExecutionState = Status.Idle}), this);
             }
 
+            Console.WriteLine("Stopping shell server");
             this.ShellSocket.Dispose();
+            Console.WriteLine("Stopping iopub publisher");
             this.IOPubSocket.Dispose();
         }
 
         private string GetAddress(int port)
         {
             return $"{this.connection.Transport}://{this.connection.IP}:{port}";
+        }
+
+        private EventHandler<DataAddedEventArgs> GetStreamHandler(Func<int, string> mapper,
+            PowerShell powerShell, string targetStream, Message originalMessage)
+        {
+            return (sender, args) =>
+            {
+                this.IOPubSocket.SendMessage(Message.Create(
+                    originalMessage, "stream", new Stream
+                    {
+                        Name = targetStream,
+                        Text = mapper(args.Index) + "\r\n"
+                    }), this);
+            };
         }
     }
 }
