@@ -86,6 +86,8 @@
     <ItemGroup>
         <Compile Include="Kernel.cs" />
         <Compile Include="MessageHandlers.cs" />
+        <Compile Include="Models\CompleteReply.cs" />
+        <Compile Include="Models\CompleteRequest.cs" />
         <Compile Include="Models\Connection.cs" />
         <Compile Include="Models\DisplayData.cs" />
         <Compile Include="Models\ExecuteReplyBase.cs" />

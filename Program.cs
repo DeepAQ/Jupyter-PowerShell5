@@ -1,10 +1,8 @@
 ﻿using System;
 using System.IO;
-using System.Linq;
 using System.Management.Automation;
 using System.Management.Automation.Runspaces;
 using System.Threading;
-using System.Threading.Tasks;
 using Jupyter_PowerShell5.Models;
 using Newtonsoft.Json;
 
@@ -24,7 +22,8 @@ namespace Jupyter_PowerShell5
             }
             else
             {
-                var rs = RunspaceFactory.CreateOutOfProcessRunspace(new TypeTable(Enumerable.Empty<string>()));
+                var rs = RunspaceFactory.CreateRunspace(InitialSessionState.CreateDefault2());
+                // var rs = RunspaceFactory.CreateOutOfProcessRunspace(new TypeTable(Enumerable.Empty<string>()));
                 rs.Open();
                 var t = new Thread(() =>
                 {
@@ -32,10 +31,11 @@ namespace Jupyter_PowerShell5
                     {
                         var ps = PowerShell.Create();
                         ps.Runspace = rs;
-                        foreach (var psObject in ps.AddScript("throw 'test'").AddCommand("Out-String").Invoke())
-                        {
-                            Console.WriteLine(psObject);
-                        }
+                        var completion = CommandCompletion.CompleteInput("Get-Content -T", 14, null, ps);
+                        // foreach (var psObject in ps.AddScript("(TabExpansion2 -inputScript 'Get-Content -T' -cursorColumn 14).CompletionMatches").AddCommand("Out-String").Invoke())
+                        // {
+                        //     Console.WriteLine(psObject);
+                        // }
                     }
                     catch (Exception e)
                     {
@@ -44,7 +44,7 @@ namespace Jupyter_PowerShell5
                 });
                 t.Start();
                 t.Join();
-                
+
                 rs.Close();
             }
         }

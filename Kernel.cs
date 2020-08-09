@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Linq;
 using System.Management.Automation;
 using System.Management.Automation.Runspaces;
 using System.Security.Cryptography;
@@ -45,7 +44,7 @@ namespace Jupyter_PowerShell5
             {
                 this.Stop();
                 Console.WriteLine($"Creating PowerShell session");
-                this.psRunspace = RunspaceFactory.CreateOutOfProcessRunspace(new TypeTable(Enumerable.Empty<string>()));
+                this.psRunspace = RunspaceFactory.CreateRunspace(InitialSessionState.CreateDefault());
                 this.psRunspace.Open();
 
                 Console.WriteLine("Starting kernel");
@@ -105,7 +104,7 @@ namespace Jupyter_PowerShell5
 
             try
             {
-                var outputs = ps.AddScript(script).AddCommand("Out-String").Invoke();
+                var outputs = ps.AddScript(script).AddCommand("Out-String").AddParameter("Width", 200).Invoke();
                 this.IOPubSocket.SendMessage(Message.Create(
                     originalMessage, "stream", new Stream
                     {
@@ -125,6 +124,13 @@ namespace Jupyter_PowerShell5
 
             this.executionCount += 1;
             return this.executionCount;
+        }
+
+        public CommandCompletion InvokeCommandCompletion(CompleteRequest req)
+        {
+            using var ps = PowerShell.Create();
+            ps.Runspace = this.psRunspace;
+            return CommandCompletion.CompleteInput(req.Code, req.CursorPosition, null, ps);
         }
 
         private void HeartbeatTask()
@@ -171,6 +177,9 @@ namespace Jupyter_PowerShell5
                             break;
                         case "execute_request":
                             MessageHandlers.HandleExecute(this, message);
+                            break;
+                        case "complete_request":
+                            MessageHandlers.HandleComplete(this, message);
                             break;
                     }
                 }

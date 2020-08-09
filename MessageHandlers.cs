@@ -1,4 +1,5 @@
-﻿using System.Reflection;
+﻿using System.Linq;
+using System.Reflection;
 using Jupyter_PowerShell5.Models;
 
 namespace Jupyter_PowerShell5
@@ -36,6 +37,19 @@ namespace Jupyter_PowerShell5
                 message, "execute_result", new ExecuteReplyOk
                 {
                     ExecutionCount = count
+                }), kernel);
+        }
+
+        public static void HandleComplete(Kernel kernel, Message message)
+        {
+            var req = message.Content.ToObject<CompleteRequest>();
+            var result = kernel.InvokeCommandCompletion(req);
+            kernel.ShellSocket.SendMessage(Message.Create(
+                message, "complete_reply", new CompleteReply
+                {
+                    Matches = result.CompletionMatches.Select(match => match.CompletionText).ToList(),
+                    CursorStart = result.ReplacementIndex,
+                    CursorEnd = result.ReplacementIndex + result.ReplacementLength
                 }), kernel);
         }
     }
