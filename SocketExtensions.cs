@@ -36,7 +36,7 @@ namespace Jupyter_PowerShell5
                 var sig = kernel.SignMessage(header, parentHeader, metadata, content);
                 if (sig != message.Signature)
                 {
-                    Console.WriteLine("! WARNING: Invalid message signature");
+                    Console.WriteLine("! WARNING: Invalid message signature, ignoring the message");
                     message.Signature = null;
                 }
             }
@@ -45,7 +45,7 @@ namespace Jupyter_PowerShell5
             message.ParentHeader = JsonConvert.DeserializeObject<Header>(parentHeader);
             message.MetaData = JObject.Parse(metadata);
             message.Content = JObject.Parse(content);
-            Console.WriteLine($"> [{message.Header.MessageType}] {metadata} {content}");
+            // Console.WriteLine($"> [{message.Header.MessageType}] {metadata} {content}");
             return message;
         }
 
@@ -61,7 +61,7 @@ namespace Jupyter_PowerShell5
                 message.Signature = kernel.SignMessage(header, parentHeader, metadata, content);
             }
 
-            Console.WriteLine($"< [{message.Header.MessageType}] {metadata} {content}");
+            // Console.WriteLine($"< [{message.Header.MessageType}] {metadata} {content}");
             foreach (var identity in message.Identities)
             {
                 socket.SendFrame(identity, true);

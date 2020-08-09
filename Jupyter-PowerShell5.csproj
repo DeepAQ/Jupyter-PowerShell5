@@ -105,6 +105,7 @@
         <Compile Include="SocketExtensions.cs" />
     </ItemGroup>
     <ItemGroup>
+      <Content Include="LICENSE" />
       <Content Include="README.md" />
     </ItemGroup>
     <ItemGroup>

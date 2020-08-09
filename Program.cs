@@ -1,8 +1,5 @@
 ﻿using System;
 using System.IO;
-using System.Management.Automation;
-using System.Management.Automation.Runspaces;
-using System.Threading;
 using Jupyter_PowerShell5.Models;
 using Newtonsoft.Json;
 
@@ -22,30 +19,7 @@ namespace Jupyter_PowerShell5
             }
             else
             {
-                var rs = RunspaceFactory.CreateRunspace(InitialSessionState.CreateDefault2());
-                // var rs = RunspaceFactory.CreateOutOfProcessRunspace(new TypeTable(Enumerable.Empty<string>()));
-                rs.Open();
-                var t = new Thread(() =>
-                {
-                    try
-                    {
-                        var ps = PowerShell.Create();
-                        ps.Runspace = rs;
-                        var completion = CommandCompletion.CompleteInput("Get-Content -T", 14, null, ps);
-                        // foreach (var psObject in ps.AddScript("(TabExpansion2 -inputScript 'Get-Content -T' -cursorColumn 14).CompletionMatches").AddCommand("Out-String").Invoke())
-                        // {
-                        //     Console.WriteLine(psObject);
-                        // }
-                    }
-                    catch (Exception e)
-                    {
-                        Console.WriteLine(e);
-                    }
-                });
-                t.Start();
-                t.Join();
-
-                rs.Close();
+                Console.WriteLine("Please launch this executable as Jupyter kernel.");
             }
         }
     }
